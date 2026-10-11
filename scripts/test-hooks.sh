@@ -482,6 +482,50 @@ printf 'tool=build+typecheck+lint at=now\n' > "$STATE/quality-gates-passed"
 check "commit allowed once gates pass"     allow "$(gdecision enforce-commit.sh "$(gpayload run_shell_command 'git commit -m x')")"
 teardown
 
+echo "enforce-commit.sh — the repo's own git hooks are not the agent's to skip"
+# install.sh leaves a repo that checks from git hooks to those hooks, so --no-verify skips
+# the checks themselves. Every case below has a green session behind it: what blocks is
+# the skip, not a missing gate.
+setup; printf 'tool=cortex_session_start at=now\n' > "$STATE/session-started"; discovered
+printf 'tool=build+typecheck+lint at=now\n' > "$STATE/quality-gates-passed"
+HEREDOC_MSG=$(printf "git commit -q -F - <<'EOF'\nfeat: block --no-verify\n\nLEFTHOOK=0 and git commit -n too\nEOF")
+check "commit --no-verify blocked"           2 "$(run enforce-commit.sh "$(bash_payload 'git commit --no-verify -m x')")"
+check "cd && commit -n blocked"              2 "$(run enforce-commit.sh "$(bash_payload 'cd apps && git commit -n -m x')")"
+check "-n inside a flag cluster blocked"     2 "$(run enforce-commit.sh "$(bash_payload 'git commit -anm x')")"
+check "abbreviated --no-veri blocked"        2 "$(run enforce-commit.sh "$(bash_payload 'git commit --no-veri -m x')")"
+check "git -C dir commit -n blocked"         2 "$(run enforce-commit.sh "$(bash_payload 'git -C repo commit -n')")"
+check "push --no-verify blocked"             2 "$(run enforce-commit.sh "$(bash_payload 'git push origin HEAD --no-verify')")"
+check "LEFTHOOK=0 git push blocked"          2 "$(run enforce-commit.sh "$(bash_payload 'LEFTHOOK=0 git push')")"
+check "LEFTHOOK=false blocked"               2 "$(run enforce-commit.sh "$(bash_payload 'LEFTHOOK=false git commit -m x')")"
+check "export LEFTHOOK=0 blocked"            2 "$(run enforce-commit.sh "$(bash_payload 'export LEFTHOOK=0; git commit -m x')")"
+check "env LEFTHOOK=\"0\" blocked"           2 "$(run enforce-commit.sh "$(bash_payload 'env LEFTHOOK="0" git push')")"
+check "a continued line blocked"             2 "$(run enforce-commit.sh "$(bash_payload "$(printf 'git commit \\\n  --no-verify -m x')")")"
+check "after a heredoc blocked"              2 "$(run enforce-commit.sh "$(bash_payload "$(printf '%s\ngit push --no-verify' "$HEREDOC_MSG")")")"
+check "push -n is a dry run, allowed"        0 "$(run enforce-commit.sh "$(bash_payload 'git push -n origin main')")"
+check "a message naming the flag allowed"    0 "$(run enforce-commit.sh "$(bash_payload 'git commit -m "mentions --no-verify and LEFTHOOK=0"')")"
+check "a heredoc message naming it allowed"  0 "$(run enforce-commit.sh "$(bash_payload "$HEREDOC_MSG")")"
+check "-mnew is -m new, allowed"             0 "$(run enforce-commit.sh "$(bash_payload 'git commit -mnew')")"
+check "git log -n allowed"                   0 "$(run enforce-commit.sh "$(bash_payload 'git log -n 3')")"
+check "LEFTHOOK=1 allowed"                   0 "$(run enforce-commit.sh "$(bash_payload 'LEFTHOOK=1 git push')")"
+check "a PR body naming it allowed"          0 "$(run enforce-commit.sh "$(bash_payload 'gh pr create --title x --body "never git commit --no-verify"')")"
+teardown
+setup
+check "blocked with no session at all"       2 "$(run enforce-commit.sh "$(bash_payload 'git push --no-verify')")"
+check "and the reason is the skip" 0 "$(printf '%s' "$(bash_payload 'git push --no-verify')" | CLAUDE_PROJECT_DIR="$SANDBOX" bash "$HOOKS_DIR/enforce-commit.sh" 2>&1 >/dev/null | grep -q "skips the repo's git hooks" && echo 0 || echo 1)"
+teardown
+
+echo "gemini enforce-commit.sh — the same skips, denied"
+setup; printf 'tool=cortex_session_start at=now\n' > "$STATE/session-started"; discovered
+printf 'tool=build+typecheck+lint at=now\n' > "$STATE/quality-gates-passed"
+check "commit --no-verify denied"            deny "$(gdecision enforce-commit.sh "$(gpayload run_shell_command 'git commit --no-verify -m x')")"
+check "push --no-verify denied"              deny "$(gdecision enforce-commit.sh "$(gpayload run_shell_command 'git push --no-verify')")"
+check "cd && commit -n denied"               deny "$(gdecision enforce-commit.sh "$(gpayload run_shell_command 'cd a && git commit -n -m x')")"
+check "LEFTHOOK=0 denied"                    deny "$(gdecision enforce-commit.sh "$(gpayload run_shell_command 'LEFTHOOK=0 git commit -m x')")"
+check "push -n allowed"                      allow "$(gdecision enforce-commit.sh "$(gpayload run_shell_command 'git push -n')")"
+check "a heredoc message allowed"            allow "$(gdecision enforce-commit.sh "$(gpayload run_shell_command "$HEREDOC_MSG")")"
+check "the deny is valid JSON" 0 "$(gpayload run_shell_command 'git push --no-verify' | CLAUDE_PROJECT_DIR="$SANDBOX" bash "$GHOOKS/enforce-commit.sh" 2>/dev/null | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["decision"]=="deny" else 1)' && echo 0 || echo 1)"
+teardown
+
 echo "gemini track-quality.sh — evidence, not touches"
 setup
 POST='{"tool_name":"mcp__cortex-hub__cortex_code_search","tool_input":{},"tool_response":{"content":[{"type":"text","text":"3 results"}]}}'
@@ -602,8 +646,9 @@ STUB
   chmod +x "$1/lefthook"
 }
 
-# $1 = extra setup run inside the fresh repo. Sets PROJ, OUT and RC as globals —
-# not via command substitution, which would run this in a subshell and throw them away.
+# $1 = extra setup run inside the fresh repo, the rest = extra installer args. Sets PROJ,
+# OUT and RC as globals — not via command substitution, which would run this in a
+# subshell and throw them away.
 install_in_sandbox() {
   PROJ=$(mktemp -d)
   lefthook_stub "$PROJ/.bin"
@@ -613,7 +658,7 @@ install_in_sandbox() {
     git init -q . && git config user.email t@t && git config user.name t
     eval "$1"
     git add -A >/dev/null 2>&1; git commit -qm init >/dev/null 2>&1
-    PATH="$PROJ/.bin:$PATH" HOME="$PROJ" bash "$INSTALL_SH" --skip-global --tools cursor
+    PATH="$PROJ/.bin:$PATH" HOME="$PROJ" bash "$INSTALL_SH" --skip-global --tools cursor "${@:2}"
   ) > "$OUT" 2>&1
   RC=$?
 }
@@ -639,13 +684,100 @@ check "no unbound variable"                 0 "$(grep -q 'unbound variable' "$OU
 check "profile still written"               0 "$([ -f "$PROJ/.cortex/project-profile.json" ] && echo 0 || echo 1)"
 rm -rf "$PROJ"
 
+echo "  a package.json verify script is the full check"
+# The repo already said what "fully checked" means; build/typecheck/lint/test picked one by
+# one would second-guess it.
+profile_verify() { python3 -c 'import json,sys;print(json.dumps(json.load(open(sys.argv[1]))["verify"][sys.argv[2]]))' "$PROJ/.cortex/project-profile.json" "$1" 2>/dev/null; }
+install_in_sandbox "printf '{\"scripts\":{\"build\":\"x\",\"lint\":\"x\",\"test\":\"x\",\"verify\":\"x\"}}' > package.json; : > pnpm-lock.yaml"
+check "installer exits clean"               0 "$RC"
+check "full is pnpm verify"                 0 "$([ "$(profile_verify full)" = '["pnpm verify"]' ] && echo 0 || echo 1)"
+check "pre_commit is left as it was"        0 "$([ "$(profile_verify pre_commit)" = '["pnpm build", "pnpm lint"]' ] && echo 0 || echo 1)"
+rm -rf "$PROJ"
+install_in_sandbox "printf '{\"scripts\":{\"verify\":\"x\"}}' > package.json"
+check "npm runs it, verify-only keeps it"   0 "$([ "$(profile_verify full)" = '["npm run verify"]' ] && echo 0 || echo 1)"
+rm -rf "$PROJ"
+install_in_sandbox "printf '{\"scripts\":{\"build\":\"x\",\"verify:ci\":\"x\"}}' > package.json; : > pnpm-lock.yaml"
+check "verify:ci is not verify"             0 "$([ "$(profile_verify full)" = '["pnpm build"]' ] && echo 0 || echo 1)"
+rm -rf "$PROJ"
+
 echo "  core.hooksPath pointing at someone else's hooks must not be overwritten"
-install_in_sandbox "printf '{}' > package.json; mkdir -p .myhooks; printf '#!/bin/sh\necho mine\n' > .myhooks/pre-commit; chmod +x .myhooks/pre-commit; git config core.hooksPath .myhooks"
+# Untracked: one developer's hooks, not the repo's. cortex still sets up its gate and says
+# plainly that it cannot run.
+install_in_sandbox "printf '{}' > package.json; mkdir -p .myhooks; printf '#!/bin/sh\necho mine\n' > .myhooks/pre-commit; chmod +x .myhooks/pre-commit; printf '.myhooks/\n' >> .git/info/exclude; git config core.hooksPath .myhooks"
 check "installer exits clean"               0 "$RC"
 check "their hooksPath is left set"         0 "$([ "$(git -C "$PROJ" config --get core.hooksPath)" = ".myhooks" ] && echo 0 || echo 1)"
 check "their hook is not overwritten"       0 "$(grep -q 'echo mine' "$PROJ/.myhooks/pre-commit" && echo 0 || echo 1)"
 check "the dead gate is reported, not hidden" 0 "$(grep -q 'NOT installing over them' "$OUT" && echo 0 || echo 1)"
 check "summary does not claim configured"   0 "$(grep -q 'no git hook runs' "$OUT" && echo 0 || echo 1)"
+rm -rf "$PROJ"
+
+echo "  a repo whose git hooks are its own keeps them — even with --force"
+# A repo that runs its checks from git hooks has said what runs on commit and push. cortex
+# used to overwrite its lefthook.yml with --force and add a second pre-commit/pre-push next
+# to husky's. Its only addition now is the post-push, in lefthook-local.yml, which lefthook
+# merges into the repo's config instead of replacing it.
+OWN_LH="printf 'pre-commit:\n  commands:\n    mine:\n      run: echo mine\n' > lefthook.yml; printf '{}' > package.json"
+install_in_sandbox "$OWN_LH" --force
+check "installer exits clean"               0 "$RC"
+check "their lefthook.yml is untouched"     0 "$(git -C "$PROJ" diff --quiet -- lefthook.yml && echo 0 || echo 1)"
+check "post-push goes to lefthook-local.yml" 0 "$(grep -q 'notify_cortex' "$PROJ/lefthook-local.yml" 2>/dev/null && echo 0 || echo 1)"
+check "which is a developer file: ignored"  0 "$(grep -qxF 'lefthook-local.yml' "$PROJ/.gitignore" && echo 0 || echo 1)"
+check "lefthook installs their hooks"       0 "$([ -f "$PROJ/.git/hooks/pre-commit" ] && echo 0 || echo 1)"
+check "summary names the owner"             0 "$(grep -q 'repo-owned hooks (lefthook (lefthook.yml))' "$OUT" && echo 0 || echo 1)"
+rm -rf "$PROJ"
+
+echo "  lefthook-local.yml is the developer's: cortex swaps its own block, nothing else"
+reinstall_in_sandbox() {
+  ( cd "$PROJ" && PATH="$PROJ/.bin:$PATH" HOME="$PROJ" bash "$INSTALL_SH" --skip-global --tools cursor "$@" ) > "$OUT" 2>&1
+  RC=$?
+}
+install_in_sandbox "$OWN_LH; printf 'lefthook-local.yml\n' >> .git/info/exclude; printf 'pre-commit:\n  commands:\n    local_only:\n      run: echo local\n' > lefthook-local.yml"
+reinstall_in_sandbox --force
+check "second install exits clean"          0 "$RC"
+check "their own lines are kept"            0 "$(grep -q 'local_only' "$PROJ/lefthook-local.yml" && echo 0 || echo 1)"
+check "exactly one cortex block"            1 "$(grep -c '^post-push:' "$PROJ/lefthook-local.yml")"
+check "exactly one start marker"            1 "$(grep -c '^# >>> cortex post-push' "$PROJ/lefthook-local.yml")"
+rm -rf "$PROJ"
+install_in_sandbox "$OWN_LH; printf 'lefthook-local.yml\n' >> .git/info/exclude; printf 'post-push:\n  commands:\n    theirs:\n      run: echo theirs\n' > lefthook-local.yml"
+check "a file with its own post-push"       0 "$RC"
+check "is left exactly as it was"           0 "$([ "$(cat "$PROJ/lefthook-local.yml")" = "$(printf 'post-push:\n  commands:\n    theirs:\n      run: echo theirs')" ] && echo 0 || echo 1)"
+check "and that is said"                    0 "$(grep -q 'has its own post-push' "$OUT" && echo 0 || echo 1)"
+rm -rf "$PROJ"
+
+echo "  husky, pre-commit, a committed hooksPath or a verify script: cortex writes no git hooks"
+# Without the repo's own lefthook config there is nothing for lefthook-local.yml to merge
+# into, and `lefthook install` would take the git hooks over from what runs them now.
+no_cortex_hooks() {
+  check "$1: exits clean"                   0 "$RC"
+  check "$1: no lefthook.yml"               0 "$([ -e "$PROJ/lefthook.yml" ] && echo 1 || echo 0)"
+  check "$1: no lefthook-local.yml"         0 "$([ -e "$PROJ/lefthook-local.yml" ] && echo 1 || echo 0)"
+  check "$1: owner reported"                0 "$(grep -q "repo-owned hooks ($2)" "$OUT" && echo 0 || echo 1)"
+}
+install_in_sandbox "printf '{}' > package.json; mkdir -p .husky; printf 'pnpm verify\n' > .husky/pre-commit" --force
+no_cortex_hooks husky "husky (.husky/pre-commit)"
+check "husky: no hook installed over it"    0 "$([ -e "$PROJ/.git/hooks/pre-commit" ] && echo 1 || echo 0)"
+rm -rf "$PROJ"
+install_in_sandbox "printf 'repos: []\n' > .pre-commit-config.yaml"
+no_cortex_hooks pre-commit "pre-commit (.pre-commit-config.yaml)"
+rm -rf "$PROJ"
+install_in_sandbox "printf '{\"scripts\":{\"build\":\"x\",\"verify\":\"x\"}}' > package.json; : > pnpm-lock.yaml"
+no_cortex_hooks verify "package.json verify script"
+check "verify: no hook installed"           0 "$([ -e "$PROJ/.git/hooks/pre-commit" ] && echo 1 || echo 0)"
+rm -rf "$PROJ"
+install_in_sandbox "printf '{}' > package.json; mkdir -p .myhooks; printf '#!/bin/sh\necho mine\n' > .myhooks/pre-commit; chmod +x .myhooks/pre-commit; git config core.hooksPath .myhooks"
+no_cortex_hooks hooksPath "core.hooksPath=.myhooks"
+check "hooksPath: path is kept"             0 "$([ "$(git -C "$PROJ" config --get core.hooksPath)" = ".myhooks" ] && echo 0 || echo 1)"
+rm -rf "$PROJ"
+
+echo "  a lefthook.yml cortex generated is cortex's, not the repo's"
+# cortex-hub itself commits the one install.sh generates; --force must still regenerate it.
+install_in_sandbox "printf '{}' > package.json; printf '# Auto-generated by cortex install.sh — per-stack pipelines\npre-commit:\n' > lefthook.yml" --force
+check "installer exits clean"               0 "$RC"
+check "regenerated with the post-push"      0 "$(grep -q 'notify_cortex' "$PROJ/lefthook.yml" && echo 0 || echo 1)"
+check "no lefthook-local.yml"               0 "$([ -e "$PROJ/lefthook-local.yml" ] && echo 1 || echo 0)"
+rm -rf "$PROJ"
+install_in_sandbox "printf '{\"scripts\":{\"verify\":\"x\"}}' > package.json; printf '# Auto-generated by cortex install.sh — per-stack pipelines\npre-commit:\n' > lefthook.yml"
+check "a leftover next to repo checks"      0 "$(grep -q 'generated by an earlier cortex install' "$OUT" && echo 0 || echo 1)"
 rm -rf "$PROJ"
 
 echo "  a husky hooksPath with no hooks of its own must be handed to lefthook"
