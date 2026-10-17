@@ -14,10 +14,10 @@ import {
   updateConductorTask,
   type ConductorTask,
   type ConductorAgent,
+  type ConductorWorker,
 } from '@/lib/api'
 import {
   TaskBriefingWizard,
-  PipelineDiagram,
   TaskDetail,
   AgentDetail,
   type StatusFilter,
@@ -27,6 +27,7 @@ import {
   buildTaskTree,
   flattenTree,
   getIdeInfo,
+  formatTimeAgo,
   getCapColor,
   getResultSummary,
   getTaskDuration,
@@ -39,6 +40,8 @@ import {
 } from './components'
 import { SkeletonCircle } from '@/components/ui/Skeleton'
 import { NumberTransition } from '@/components/ui/NumberTransition'
+import { agentsOnline } from '@/lib/conductor-plan/summary'
+import { PlanView } from './plan/PlanView'
 import styles from './page.module.css'
 
 // ── Pipeline Card Component ──
@@ -77,7 +80,7 @@ function PipelineCard({
   allNodes,
   onSelectTask,
   onDeletePipeline,
-  onShowDiagram,
+  onShowPlan,
   onFollowUp,
   onCancel,
 }: {
@@ -85,7 +88,7 @@ function PipelineCard({
   allNodes: TaskTreeNode[]
   onSelectTask: (task: ConductorTask) => void
   onDeletePipeline: (rootTaskId: string) => void
-  onShowDiagram: (rootTaskId: string) => void
+  onShowPlan: (rootTaskId: string) => void
   onFollowUp: (task: ConductorTask) => void
   onCancel: (taskId: string) => void
 }) {
@@ -239,10 +242,10 @@ function PipelineCard({
       <div className={styles.pcActionBar}>
         <button
           className={styles.pcActionBtn}
-          title="View pipeline diagram"
-          onClick={() => onShowDiagram(root.id)}
+          title="View plan"
+          onClick={() => onShowPlan(root.id)}
         >
-          <Link {...ICON_INLINE} /> Diagram
+          <Link {...ICON_INLINE} /> Plan
         </button>
         {isCompleted && (
           <button
@@ -328,14 +331,14 @@ function PipelineGrid({
   tasks,
   onSelectTask,
   onDeletePipeline,
-  onShowDiagram,
+  onShowPlan,
   onFollowUp,
   onCancel,
 }: {
   tasks: ConductorTask[]
   onSelectTask: (task: ConductorTask) => void
   onDeletePipeline: (rootTaskId: string) => void
-  onShowDiagram: (rootTaskId: string) => void
+  onShowPlan: (rootTaskId: string) => void
   onFollowUp: (task: ConductorTask) => void
   onCancel: (taskId: string) => void
 }) {
@@ -367,7 +370,7 @@ function PipelineGrid({
             allNodes={subtreeFlat}
             onSelectTask={onSelectTask}
             onDeletePipeline={onDeletePipeline}
-            onShowDiagram={onShowDiagram}
+            onShowPlan={onShowPlan}
             onFollowUp={onFollowUp}
             onCancel={onCancel}
           />
@@ -392,12 +395,13 @@ export default function ConductorPage() {
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [taskPrefill, setTaskPrefill] = useState<TaskPrefill | undefined>(undefined)
   const [resumeTask, setResumeTask] = useState<ResumeTask | undefined>(undefined)
-  const [diagramPipelineId, setDiagramPipelineId] = useState<string | null>(null)
+  const [planRootId, setPlanRootId] = useState<string | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
 
   const allTasks = data?.tasks ?? []
   const agents = agentsData?.agents ?? []
-  const onlineCount = agentsData?.online ?? agents.length
+  const online = agentsOnline(agents, agentsData?.sessions ?? [])
+  const onlineCount = online.total
   const [agentsCollapsed, setAgentsCollapsed] = useState(false)
 
   const filteredTasks = useMemo(() => {
@@ -485,19 +489,6 @@ export default function ConductorPage() {
     setShowCreateForm(true)
   }, [])
 
-  const diagramTasks = useMemo(() => {
-    if (!diagramPipelineId) return []
-    const ids = new Set<string>()
-    function collect(parentId: string) {
-      ids.add(parentId)
-      for (const t of allTasks) {
-        if (t.parent_task_id === parentId) collect(t.id)
-      }
-    }
-    collect(diagramPipelineId)
-    return allTasks.filter((t) => ids.has(t.id))
-  }, [diagramPipelineId, allTasks])
-
   const filterTabs: { key: StatusFilter; label: string; count: number }[] = [
     { key: 'all', label: 'All', count: counts.all },
     { key: 'pending', label: 'Pending', count: counts.pending },
@@ -549,7 +540,7 @@ export default function ConductorPage() {
       </div>
 
       {/* Agents Online */}
-      {agents.length > 0 && (
+      {onlineCount > 0 && (
         <div className={styles.section}>
           <div className={styles.sectionHeader}>
             <h2
@@ -557,12 +548,13 @@ export default function ConductorPage() {
               onClick={() => setAgentsCollapsed(!agentsCollapsed)}
             >
               <span className={`${styles.collapseIcon} ${agentsCollapsed ? styles.collapseIconClosed : ''}`}>▾</span>
-              Agents <span className={styles.filterCount}><NumberTransition value={onlineCount} /> online</span>
+              Agents · <span className={styles.filterCount}><NumberTransition value={onlineCount} /> online</span>
             </h2>
           </div>
           {!agentsCollapsed && (
+            <>
             <div className={styles.agentsGrid}>
-              {agents.map((agent: ConductorAgent) => {
+              {agents.map((agent: ConductorWorker) => {
                 const { icon: ideIcon, label: ideLabel, colorClass } = getIdeInfo(agent.ide)
                 const ideColor = colorClass ? styles[colorClass] : ''
                 const statusLabel = agent.status === 'idle' ? 'Idle' : agent.status === 'busy' ? 'Busy' : 'Online'
@@ -600,6 +592,16 @@ export default function ConductorPage() {
                         <span className={styles.agentDetailLabel}>Connected</span>
                         <span className={styles.agentDetailValue}>{new Date(agent.connectedAt).toLocaleTimeString()}</span>
                       </div>
+                      <div className={styles.agentDetailRow}>
+                        <span className={styles.agentDetailLabel}>Engines</span>
+                        <span className={styles.agentDetailValue}>
+                          {agent.engines.map((e) => `${e.executor} (${e.models.length} ${e.models.length === 1 ? 'model' : 'models'})`).join(', ') || '-'}
+                        </span>
+                      </div>
+                      <div className={styles.agentDetailRow}>
+                        <span className={styles.agentDetailLabel}>Task</span>
+                        <span className={styles.agentDetailValue}>{agent.currentTaskId ?? 'idle'}</span>
+                      </div>
                     </div>
 
                     {agent.capabilities && agent.capabilities.length > 0 ? (
@@ -616,6 +618,24 @@ export default function ConductorPage() {
                 )
               })}
             </div>
+            {online.sessions.length > 0 && (
+              <div className={styles.sessionList}>
+                <span className={styles.sessionListLabel}>MCP sessions</span>
+                {online.sessions.map((s) => {
+                  const { icon, label, colorClass } = getIdeInfo(s.ide ?? undefined)
+                  return (
+                    <div key={s.sessionId} className={styles.sessionRow}>
+                      <span className={`${styles.agentIdeIcon} ${colorClass ? styles[colorClass] : ''}`} title={label}>{icon}</span>
+                      <strong className={styles.agentIdText}>{s.agentId}</strong>
+                      <span className={styles.sessionMeta}>{s.hostname ?? '-'}</span>
+                      <span className={styles.sessionMeta}>{s.branch ?? '-'}</span>
+                      <span className={styles.sessionMeta}>{formatTimeAgo(s.lastActivity)}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            </>
           )}
         </div>
       )}
@@ -699,34 +719,13 @@ export default function ConductorPage() {
           tasks={filteredTasks}
           onSelectTask={setSelectedTask}
           onDeletePipeline={(rootId: string) => setDeleteConfirm(rootId)}
-          onShowDiagram={(rootId: string) => setDiagramPipelineId(rootId)}
+          onShowPlan={(rootId: string) => setPlanRootId(rootId)}
           onFollowUp={handleNewTaskFromOutcome}
           onCancel={handleCancel}
         />
       </div>
 
-      {/* Pipeline Diagram Modal */}
-      {diagramPipelineId && diagramTasks.length > 0 && (
-        <div className={styles.diagramModalOverlay} onClick={() => setDiagramPipelineId(null)}>
-          <div className={styles.diagramModalPanel} onClick={(e) => e.stopPropagation()}>
-            <div className={styles.diagramModalHeader}>
-              <h2 className={styles.diagramModalTitle}>
-                <Link {...ICON_INLINE} /> Pipeline Diagram
-                <span className={styles.diagramModalSubtitle}>
-                  {diagramTasks.length} tasks
-                </span>
-              </h2>
-              <button className={styles.detailClose} onClick={() => setDiagramPipelineId(null)}>×</button>
-            </div>
-            <div className={styles.diagramModalBody}>
-              <PipelineDiagram
-                tasks={diagramTasks}
-                onNodeClick={(task) => { setDiagramPipelineId(null); setSelectedTask(task) }}
-              />
-            </div>
-          </div>
-        </div>
-      )}
+      {planRootId && <PlanView rootId={planRootId} onClose={() => setPlanRootId(null)} />}
 
       {/* Delete Pipeline Confirmation */}
       {deleteConfirm && (

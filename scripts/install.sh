@@ -23,7 +23,7 @@
 set -euo pipefail
 
 HOOKS_VERSION=7
-HOOKS_MINOR=9
+HOOKS_MINOR=10
 MCP_URL_DEFAULT="http://localhost:8318/mcp"
 
 # ── Colors ──
@@ -297,9 +297,9 @@ if os.path.exists(path):
 if 'mcpServers' not in config:
     config['mcpServers'] = {}
 config['mcpServers']['cortex-hub'] = {
-    'command': 'npx',
-    'args': ['-y', 'mcp-remote', '${MCP_URL}', '--header', 'Authorization:\${AUTH_HEADER}'],
-    'env': {'AUTH_HEADER': 'Bearer ${API_KEY}'}
+    'type': 'http',
+    'url': '${MCP_URL}',
+    'headers': {'Authorization': 'Bearer ${API_KEY}'}
 }
 with open(path, 'w') as f:
     json.dump(config, f, indent=2)
@@ -963,7 +963,7 @@ d=json.load(sys.stdin)
 r=d.get('tool_response', d.get('tool_output',''))
 print(f'COMMAND={repr(d.get(\"tool_input\",{}).get(\"command\",\"\"))}')
 print(f'TOOL_NAME={repr(d.get(\"tool_name\",\"\"))}')
-print(f'OUTPUT={repr(json.dumps(r) if not isinstance(r,str) else r)}')
+print(f'OUTPUT={repr(json.dumps(r, ensure_ascii=False) if not isinstance(r,str) else r)}')
 print(f'CLIENT_ID={repr(str(d.get(\"session_id\",\"\")))}')
 " 2>/dev/null || true)"
 fi
@@ -979,8 +979,10 @@ record() {
 
 # A command that reports success while the build failed — `pnpm build || true`, or a pipe
 # that swallows the status. If the output says it failed, the gate does not open.
+# ESLint prints "✖ N problems (0 errors, N warnings)" for warnings alone, so a bare ✖
+# is not a failure; only an error count above zero is.
 looks_failed() {
-  printf '%s' "$OUTPUT" | grep -Eq 'ERR_PNPM|ELIFECYCLE|error TS[0-9]|Command failed|✖|FAIL |Exit status [1-9]'
+  printf '%s' "$OUTPUT" | grep -Eq 'ERR_PNPM|ELIFECYCLE|error TS[0-9]|Command failed|✖ [0-9]+ problems? \([1-9]|FAIL |Exit status [1-9]'
 }
 
 # 1 = this command is not one of the quality gates. mark_gate flips it, and the
@@ -1831,7 +1833,7 @@ import sys,json
 d=json.load(sys.stdin)
 print(f'TOOL_NAME={repr(d.get(\"tool_name\",\"\"))}')
 print(f'COMMAND={repr(d.get(\"tool_input\",{}).get(\"command\",\"\"))}')
-print(f'OUTPUT={repr(json.dumps(d.get(\"tool_response\", d.get(\"tool_output\",\"\"))))}')
+print(f'OUTPUT={repr(json.dumps(d.get(\"tool_response\", d.get(\"tool_output\",\"\")), ensure_ascii=False))}')
 print(f'CLIENT_ID={repr(str(d.get(\"session_id\",\"\")))}')
 " 2>/dev/null || true)"
 fi
@@ -1839,8 +1841,10 @@ fi
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 CLIENT_ID=$(printf '%s' "$CLIENT_ID" | tr -cd 'A-Za-z0-9_-' | cut -c1-128)
 record() { printf 'tool=%s at=%s\n' "${2:-$TOOL_NAME}" "$NOW" > "$STATE_DIR/$1"; }
+# ESLint prints "✖ N problems (0 errors, N warnings)" for warnings alone, so a bare ✖
+# is not a failure; only an error count above zero is.
 looks_failed() {
-  printf '%s' "$OUTPUT" | grep -Eq 'ERR_PNPM|ELIFECYCLE|error TS[0-9]|Command failed|✖|FAIL |Exit status [1-9]'
+  printf '%s' "$OUTPUT" | grep -Eq 'ERR_PNPM|ELIFECYCLE|error TS[0-9]|Command failed|✖ [0-9]+ problems? \([1-9]|FAIL |Exit status [1-9]'
 }
 # 1 = this command is not one of the quality gates. mark_gate flips it, and the
 # invalidation block at the bottom reads it, so `pnpm build | tee build.log` does not

@@ -231,15 +231,18 @@ if config_key:
 else:
     target = config
 
-entry = {
-    'serverURL': mcp_url,
-    'headers': {
-        'Authorization': 'Bearer ' + api_key
+if tool_key in ('claude', 'vscode'):
+    entry = {
+        'type': 'http',
+        'url': mcp_url,
+        'headers': {'Authorization': 'Bearer ' + api_key}
     }
-}
-
-if tool_key == 'vscode':
-    entry['type'] = 'sse'
+else:
+    entry = {
+        'command': 'npx',
+        'args': ['-y', 'mcp-remote', mcp_url, '--header', 'Authorization:`${AUTH_HEADER}'],
+        'env': {'AUTH_HEADER': 'Bearer ' + api_key}
+    }
 
 target['cortex-hub'] = entry
 

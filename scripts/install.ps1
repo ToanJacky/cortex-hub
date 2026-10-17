@@ -21,7 +21,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $HOOKS_VERSION = 7
-$HOOKS_MINOR = 9
+$HOOKS_MINOR = 10
 $LATEST_VERSION = "$HOOKS_VERSION.$HOOKS_MINOR"
 $MCP_URL_DEFAULT = "http://localhost:8318/mcp"
 
@@ -149,15 +149,24 @@ if (-not $McpConfigured) {
 
         # Pure PowerShell JSON merge — no Python needed
         function Set-McpConfig {
-            param([string]$Path, [string]$RootKey, [string]$Label)
+            param([string]$Path, [string]$RootKey, [string]$Label, [string]$Kind = "mcp-remote")
             $dir = Split-Path $Path -Parent
             if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
             # Build MCP entry as ordered dict (PS 5.1 compatible)
-            $mcpEntry = [ordered]@{
-                command = "npx"
-                args = @("-y", "mcp-remote", $McpUrl, "--header", "Authorization:`${AUTH_HEADER}")
-                env = [ordered]@{ AUTH_HEADER = "Bearer $ApiKey" }
+            if ($Kind -eq "http") {
+                # Claude Code's own form: type http with url and headers
+                $mcpEntry = [ordered]@{
+                    type = "http"
+                    url = $McpUrl
+                    headers = [ordered]@{ Authorization = "Bearer $ApiKey" }
+                }
+            } else {
+                $mcpEntry = [ordered]@{
+                    command = "npx"
+                    args = @("-y", "mcp-remote", $McpUrl, "--header", "Authorization:`${AUTH_HEADER}")
+                    env = [ordered]@{ AUTH_HEADER = "Bearer $ApiKey" }
+                }
             }
 
             if (Test-Path $Path) {
@@ -186,7 +195,7 @@ if (-not $McpConfigured) {
             Write-Ok ("MCP: configured " + $Label)
         }
 
-        Set-McpConfig -Path $ClaudeJson -RootKey "mcpServers" -Label "Claude Code"
+        Set-McpConfig -Path $ClaudeJson -RootKey "mcpServers" -Label "Claude Code" -Kind "http"
         $McpConfigured = $true
 
         if (Test-IDESelected "cursor") {
@@ -701,7 +710,7 @@ d=json.load(sys.stdin)
 r=d.get('tool_response', d.get('tool_output',''))
 print(f'COMMAND={repr(d.get(\"tool_input\",{}).get(\"command\",\"\"))}')
 print(f'TOOL_NAME={repr(d.get(\"tool_name\",\"\"))}')
-print(f'OUTPUT={repr(json.dumps(r) if not isinstance(r,str) else r)}')
+print(f'OUTPUT={repr(json.dumps(r, ensure_ascii=False) if not isinstance(r,str) else r)}')
 print(f'CLIENT_ID={repr(str(d.get(\"session_id\",\"\")))}')
 " 2>/dev/null || true)"
 fi
@@ -717,8 +726,10 @@ record() {
 
 # A command that reports success while the build failed — `pnpm build || true`, or a pipe
 # that swallows the status. If the output says it failed, the gate does not open.
+# ESLint prints "✖ N problems (0 errors, N warnings)" for warnings alone, so a bare ✖
+# is not a failure; only an error count above zero is.
 looks_failed() {
-  printf '%s' "$OUTPUT" | grep -Eq 'ERR_PNPM|ELIFECYCLE|error TS[0-9]|Command failed|✖|FAIL |Exit status [1-9]'
+  printf '%s' "$OUTPUT" | grep -Eq 'ERR_PNPM|ELIFECYCLE|error TS[0-9]|Command failed|✖ [0-9]+ problems? \([1-9]|FAIL |Exit status [1-9]'
 }
 
 # 1 = this command is not one of the quality gates. mark_gate flips it, and the
@@ -1531,7 +1542,7 @@ import sys,json
 d=json.load(sys.stdin)
 print(f'TOOL_NAME={repr(d.get(\"tool_name\",\"\"))}')
 print(f'COMMAND={repr(d.get(\"tool_input\",{}).get(\"command\",\"\"))}')
-print(f'OUTPUT={repr(json.dumps(d.get(\"tool_response\", d.get(\"tool_output\",\"\"))))}')
+print(f'OUTPUT={repr(json.dumps(d.get(\"tool_response\", d.get(\"tool_output\",\"\")), ensure_ascii=False))}')
 print(f'CLIENT_ID={repr(str(d.get(\"session_id\",\"\")))}')
 " 2>/dev/null || true)"
 fi
@@ -1539,8 +1550,10 @@ fi
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 CLIENT_ID=$(printf '%s' "$CLIENT_ID" | tr -cd 'A-Za-z0-9_-' | cut -c1-128)
 record() { printf 'tool=%s at=%s\n' "${2:-$TOOL_NAME}" "$NOW" > "$STATE_DIR/$1"; }
+# ESLint prints "✖ N problems (0 errors, N warnings)" for warnings alone, so a bare ✖
+# is not a failure; only an error count above zero is.
 looks_failed() {
-  printf '%s' "$OUTPUT" | grep -Eq 'ERR_PNPM|ELIFECYCLE|error TS[0-9]|Command failed|✖|FAIL |Exit status [1-9]'
+  printf '%s' "$OUTPUT" | grep -Eq 'ERR_PNPM|ELIFECYCLE|error TS[0-9]|Command failed|✖ [0-9]+ problems? \([1-9]|FAIL |Exit status [1-9]'
 }
 # 1 = this command is not one of the quality gates. mark_gate flips it, and the
 # invalidation block at the bottom reads it, so `pnpm build | tee build.log` does not

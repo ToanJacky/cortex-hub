@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import DashboardLayout from '@/components/layout/DashboardLayout'
-import { getExternalUrl } from '@/lib/config'
+import { resolveMcpEndpoint, type McpEndpoint } from '@/lib/config'
 import useSWR from 'swr'
 import {
   checkHealth,
@@ -12,6 +12,7 @@ import {
   getSystemMetrics,
   getConductorAgents,
   getRecipeStats,
+  getSettings,
   type SystemMetrics,
 } from '@/lib/api'
 import {
@@ -26,6 +27,7 @@ import { MetricCard } from '@/components/ui/MetricCard'
 import { GaugeChart } from '@/components/ui/GaugeChart'
 import { ActivityFeed } from '@/components/ui/ActivityFeed'
 import { StatusDot } from '@/components/ui/StatusDot'
+import { agentsOnline } from '@/lib/conductor-plan/summary'
 import styles from './page.module.css'
 
 // ── Utilities ──
@@ -166,16 +168,19 @@ export default function DashboardPage() {
   const { data: recipeData } = useSWR('recipe-stats', getRecipeStats, {
     refreshInterval: 30000,
   })
-  const onlineAgents = agentsData?.agents?.length ?? 0
+  const onlineAgents = agentsOnline(agentsData?.agents ?? [], agentsData?.sessions ?? []).total
 
   const svcMap = healthData?.services as Record<string, string> | undefined
 
-  // Dynamic MCP URL state to resolve Tailscale/localhost
-  const [mcpUrl, setMcpUrl] = useState('http://localhost:8318')
+  // Same SWR key as the settings page, so the two share one fetch
+  const { data: settings, error: settingsError } = useSWR('settings', getSettings)
+  const [mcpEndpoint, setMcpEndpoint] = useState<McpEndpoint | null>(null)
 
   useEffect(() => {
-    setMcpUrl(getExternalUrl('mcp'))
-  }, [])
+    if (settings || settingsError) {
+      setMcpEndpoint(resolveMcpEndpoint(settings?.externalUrls?.mcp, window.location))
+    }
+  }, [settings, settingsError])
 
   return (
     <DashboardLayout title="Dashboard" subtitle="System overview and project health">
@@ -477,13 +482,15 @@ export default function DashboardPage() {
         <h2 className={styles.sectionTitle}>Quick Connect</h2>
         <div className={`card ${styles.connectCard}`}>
           <p className={styles.connectText}>
-            Add Cortex Hub to your AI agent&apos;s MCP config:
+            Add Cortex Hub to Claude Code&apos;s MCP config (<code>~/.claude.json</code> or a
+            project&apos;s <code>.mcp.json</code>). Other clients: see Settings.
           </p>
           <pre className={styles.codeBlock}>
 {`{
   "mcpServers": {
     "cortex-hub": {
-      "url": "${mcpUrl.endsWith('/mcp') ? mcpUrl : `${mcpUrl}/mcp`}",
+      "type": "http",
+      "url": "${mcpEndpoint?.url ?? 'https://<your-mcp-host>/mcp'}",
       "headers": {
         "Authorization": "Bearer <your-api-key>"
       }
@@ -491,6 +498,12 @@ export default function DashboardPage() {
   }
 }`}
           </pre>
+          {mcpEndpoint?.source === 'unconfigured' && (
+            <p className={styles.mcpHint}>
+              Set <code>EXTERNAL_MCP_URL</code> in the hub&apos;s <code>.env</code> to the public MCP
+              URL — it can&apos;t be worked out from this dashboard&apos;s domain.
+            </p>
+          )}
           <a href="/keys" className="btn btn-primary btn-sm" style={{ marginTop: 'var(--space-4)', display: 'inline-flex' }}>
             Generate API Key →
           </a>

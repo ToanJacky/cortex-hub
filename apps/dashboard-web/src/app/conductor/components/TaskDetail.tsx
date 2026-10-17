@@ -55,13 +55,16 @@ export function TaskDetail({
   onDelete,
   onMarkDone,
   onNewTaskFromOutcome,
+  actions,
 }: {
   task: ConductorTask
   onClose: () => void
   onCancel: () => void
-  onDelete: () => void
+  /** May resolve false when nothing was deleted (cancelled prompt, refusal): the drawer then stays open. */
+  onDelete: () => void | boolean | Promise<void | boolean>
   onMarkDone?: () => void
   onNewTaskFromOutcome?: (task: ConductorTask) => void
+  actions?: React.ReactNode
 }) {
   const isRunning = task.status === 'in_progress' || task.status === 'accepted' || task.status === 'analyzing'
   const isActionable = task.status === 'pending' || task.status === 'assigned' || task.status === 'accepted' || task.status === 'in_progress' || task.status === 'analyzing' || task.status === 'review'
@@ -293,6 +296,8 @@ export function TaskDetail({
           </Section>
         </div>
 
+        {actions}
+
         {/* Sticky ghost action buttons */}
         <div className={styles.detailActions}>
           {isActionable && (
@@ -316,7 +321,7 @@ export function TaskDetail({
           )}
           <button
             className={`${styles.detailActionBtn} ${styles.detailActionBtnDanger}`}
-            onClick={() => { onDelete(); onClose() }}
+            onClick={() => { void Promise.resolve(onDelete()).then((deleted) => { if (deleted !== false) onClose() }) }}
           >
             <Trash2 size={14} strokeWidth={1.5} />
             Delete

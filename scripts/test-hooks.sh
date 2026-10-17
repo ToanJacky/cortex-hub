@@ -400,6 +400,18 @@ printf '{"tool_name":"Bash","tool_input":{"command":"pnpm build || true"},"tool_
 check "a hidden build failure opens nothing" 0 "$([ ! -f "$STATE/gate-build" ] && echo 0 || echo 1)"
 teardown
 
+setup
+printf '{"tool_name":"Bash","tool_input":{"command":"pnpm lint"},"tool_response":{"stdout":"✖ 3 problems (0 errors, 3 warnings)","stderr":""}}' \
+  | CLAUDE_PROJECT_DIR="$SANDBOX" bash "$HOOKS_DIR/track-quality.sh" >/dev/null 2>&1
+check "a lint with only warnings passes"    0 "$(grep -q '^tool=' "$STATE/gate-lint" 2>/dev/null && echo 0 || echo 1)"
+teardown
+
+setup
+printf '{"tool_name":"Bash","tool_input":{"command":"pnpm lint || true"},"tool_response":{"stdout":"✖ 4 problems (1 error, 3 warnings)","stderr":""}}' \
+  | CLAUDE_PROJECT_DIR="$SANDBOX" bash "$HOOKS_DIR/track-quality.sh" >/dev/null 2>&1
+check "a lint with an error opens nothing"  0 "$([ ! -f "$STATE/gate-lint" ] && echo 0 || echo 1)"
+teardown
+
 echo "track-quality.sh — a green build certifies a tree, not a session"
 # Gates passed, then one Edit, then `git commit`: the commit gate said yes to code that had
 # never been built. The certificate has to die the moment the tree changes under it.
@@ -537,7 +549,35 @@ check "report does not pass the gates"     0 "$([ ! -f "$STATE/quality-gates-pas
 printf '{"tool_name":"run_shell_command","tool_input":{"command":"pnpm build"},"tool_response":{"stdout":"ELIFECYCLE Command failed"}}' \
   | CLAUDE_PROJECT_DIR="$SANDBOX" bash "$GHOOKS/track-quality.sh" >/dev/null 2>&1
 check "a hidden failure opens nothing"     0 "$([ ! -f "$STATE/gate-build" ] && echo 0 || echo 1)"
+printf '{"tool_name":"run_shell_command","tool_input":{"command":"pnpm lint"},"tool_response":{"stdout":"✖ 3 problems (0 errors, 3 warnings)"}}' \
+  | CLAUDE_PROJECT_DIR="$SANDBOX" bash "$GHOOKS/track-quality.sh" >/dev/null 2>&1
+check "warnings alone pass the lint gate"  0 "$(grep -q '^tool=' "$STATE/gate-lint" 2>/dev/null && echo 0 || echo 1)"
 teardown
+
+echo "track-quality.sh — the lint verdict without jq"
+# The python3 fallback ran json.dumps with its ASCII default, so ✖ reached the regex as
+# \u2716 and a lint with errors armed the gate on any machine without jq.
+NOJQ=$(mktemp -d)
+for b in bash cat grep sed printf python3 mktemp rm dirname pwd date tr cut mkdir; do
+  [ -x "$(command -v $b 2>/dev/null)" ] && ln -sf "$(command -v $b)" "$NOJQ/$b"
+done
+lint_nojq() {  # $1 hooks dir, $2 tool name, $3 eslint summary
+  printf '{"tool_name":"%s","tool_input":{"command":"pnpm lint"},"tool_response":{"stdout":"%s","stderr":""}}' "$2" "$3" \
+    | CLAUDE_PROJECT_DIR="$SANDBOX" PATH="$NOJQ" bash "$1/track-quality.sh" >/dev/null 2>&1
+}
+setup; lint_nojq "$HOOKS_DIR" Bash '✖ 2 problems (2 errors, 0 warnings)'
+check "claude: errors open nothing"        0 "$([ ! -f "$STATE/gate-lint" ] && echo 0 || echo 1)"
+teardown
+setup; lint_nojq "$HOOKS_DIR" Bash '✖ 3 problems (0 errors, 3 warnings)'
+check "claude: warnings alone pass"        0 "$(grep -q '^tool=' "$STATE/gate-lint" 2>/dev/null && echo 0 || echo 1)"
+teardown
+setup; lint_nojq "$GHOOKS" run_shell_command '✖ 1 problem (1 error, 0 warnings)'
+check "gemini: errors open nothing"        0 "$([ ! -f "$STATE/gate-lint" ] && echo 0 || echo 1)"
+teardown
+setup; lint_nojq "$GHOOKS" run_shell_command '✖ 3 problems (0 errors, 3 warnings)'
+check "gemini: warnings alone pass"        0 "$(grep -q '^tool=' "$STATE/gate-lint" 2>/dev/null && echo 0 || echo 1)"
+teardown
+rm -rf "$NOJQ"
 
 echo "gemini — both holes, same shape"
 setup; printf 'tool=cortex_session_start at=now\n' > "$STATE/session-started"; discovered
