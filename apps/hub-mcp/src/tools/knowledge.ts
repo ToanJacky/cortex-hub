@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { Env } from '../types.js'
 import { apiCall } from '../api-call.js'
+import { hasIssueOrCommitReference, sourceRefsSchema, traceabilityBlock, traceabilityTags } from '../traceability.js'
 
 /**
  * Register knowledge tools.
@@ -14,7 +15,7 @@ export function registerKnowledgeTools(server: McpServer, env: Env) {
   // ── Store knowledge ──
   server.tool(
     'cortex_knowledge_store',
-    'Store a knowledge document in the Cortex knowledge base. Auto-chunks and embeds the content for semantic search. Use this to contribute discovered patterns, resolved issues, architecture decisions, and reusable solutions. Supports MemPalace-inspired memory hierarchy (hallType) and temporal validity (validFrom).',
+    'Store a concise, reusable pattern, resolved issue, architecture decision, or solution—not a copied issue thread or speculation. For the Multica POC, every write must cite a GitHub issue or commit in sourceRefs. The document is derived context; GitHub Issues and commits remain authoritative.',
     {
       title: z.string().describe('Document title (concise, descriptive)'),
       content: z.string().describe('Full document content to store'),
@@ -23,16 +24,25 @@ export function registerKnowledgeTools(server: McpServer, env: Env) {
       agentId: z.string().optional().describe('Contributing agent identifier'),
       hallType: z.enum(['fact', 'event', 'discovery', 'preference', 'advice', 'general']).optional().describe('MemPalace-inspired hall type: fact | event | discovery | preference | advice | general (default)'),
       validFrom: z.string().optional().describe('ISO date when this fact became valid (temporal validity)'),
+      sourceRefs: sourceRefsSchema.optional().describe('GitHub source references for this derived knowledge'),
     },
-    async ({ title, content, tags, projectId, agentId, hallType, validFrom }) => {
+    async ({ title, content, tags, projectId, agentId, hallType, validFrom, sourceRefs }) => {
+      if (env.REQUIRE_SOURCE_TRACE === 'true' && !hasIssueOrCommitReference(sourceRefs)) {
+        return {
+          content: [{ type: 'text' as const, text: 'This Cortex deployment requires sourceRefs.issue or sourceRefs.commit for every knowledge write.' }],
+          isError: true,
+        }
+      }
+
       try {
+        const tracedContent = `${content}${traceabilityBlock(sourceRefs)}`
         const res = await apiCall(env, '/api/knowledge', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             title,
-            content,
-            tags: tags ?? [],
+            content: tracedContent,
+            tags: traceabilityTags(tags, sourceRefs),
             projectId,
             sourceAgentId: agentId,
             source: 'agent',

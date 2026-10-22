@@ -75,7 +75,9 @@ describe('GET /mcp (standalone SSE stream)', () => {
       {} as never,
     )
 
-    const reader = res.body!.getReader()
+    const body = res.body
+    if (!body) throw new Error('expected /mcp to open an SSE response body')
+    const reader = body.getReader()
     const first = await Promise.race([
       reader.read(),
       new Promise<never>((_, reject) =>
@@ -106,6 +108,24 @@ describe('GET /mcp (standalone SSE stream)', () => {
     )
 
     expect(res.status).toBe(401)
+  })
+
+  it('rejects a browser Origin that is not explicitly allowed', async () => {
+    const app = (await import('./index.js')).default
+
+    const res = await app.fetch(
+      new Request('http://localhost/mcp', {
+        method: 'GET',
+        headers: {
+          Accept: 'text/event-stream',
+          Origin: 'https://untrusted.example.com',
+          Authorization: 'Bearer test-key',
+        },
+      }),
+      { MCP_ALLOWED_ORIGINS: 'https://trusted.example.com' } as never,
+    )
+
+    expect(res.status).toBe(403)
   })
 
   it('still buffers a POST body, so telemetry keeps measuring it', async () => {

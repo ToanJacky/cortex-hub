@@ -9,6 +9,7 @@ import { registerAllTools } from './tools/index.js'
 import { validateApiKey, invalidateTokenCache } from './middleware/auth.js'
 import { telemetryStorage } from './api-call.js'
 import { appendHintBlocks, canAppendHints } from './hint-blocks.js'
+import { isAllowedMcpOrigin } from './mcp-origin.js'
 import type { Env } from './types.js'
 
 
@@ -22,18 +23,19 @@ app.use('*', async (c, next) => {
   const envKeys: (keyof Env)[] = [
     'QDRANT_URL', 'CLIPROXY_URL',
     'DASHBOARD_API_URL', 'MCP_SERVER_NAME', 'MCP_SERVER_VERSION', 'API_KEYS',
-    'INTERNAL_API_SECRET',
+    'INTERNAL_API_SECRET', 'MCP_ALLOWED_ORIGINS', 'REQUIRE_SOURCE_TRACE',
   ]
   for (const key of envKeys) {
-    if (!c.env[key] && process.env[key]) {
-      ;(c.env as unknown as Record<string, string>)[key] = process.env[key]!
+    const value = process.env[key]
+    if (!c.env[key] && value) {
+      ;(c.env as unknown as Record<string, string>)[key] = value
     }
   }
   await next()
 })
 
-// MCP server requires open CORS — agents connect from any IDE/origin
-// Security is enforced via API key auth, not CORS
+// MCP server requires broad CORS for IDE clients, while /mcp separately
+// validates browser Origin headers against MCP_ALLOWED_ORIGINS.
 app.use('*', cors())
 app.use('*', logger())
 
@@ -220,6 +222,15 @@ function withFirstByte(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Ar
 // Stateless mode: each request gets a fresh transport + server.
 // enableJsonResponse: true allows simple request/response without SSE.
 app.all('/mcp', async (c) => {
+  const origin = c.req.header('Origin')
+  if (!isAllowedMcpOrigin(origin, c.env.MCP_ALLOWED_ORIGINS || process.env.MCP_ALLOWED_ORIGINS)) {
+    return c.json({
+      jsonrpc: '2.0',
+      error: { code: -32003, message: 'Forbidden: invalid Origin' },
+      id: null,
+    }, 403)
+  }
+
   // ─── Auth: STRICT enforcement ──────────────────────────────────
   // ALL HTTP requests to /mcp MUST provide a valid Bearer token.
   // Inter-service calls (dashboard-api → hub-mcp) use in-memory

@@ -151,7 +151,7 @@ jobs:
           # github.sha. Not `context: git`: it reads the ref from the checkout,
           # and a checkout of a commit is a detached HEAD it refuses
           # ("Cannot find detached HEAD ref"), which failed every build.
-          images: ${{ env.REGISTRY }}/lktiep/cortex-api
+          images: ${{ env.REGISTRY }}/toanjacky/cortex-api
           tags: |
             type=raw,value=latest
             type=raw,value=v${{ needs.version.outputs.version }}
@@ -202,7 +202,7 @@ jobs:
           # github.sha. Not `context: git`: it reads the ref from the checkout,
           # and a checkout of a commit is a detached HEAD it refuses
           # ("Cannot find detached HEAD ref"), which failed every build.
-          images: ${{ env.REGISTRY }}/lktiep/cortex-hub-web
+          images: ${{ env.REGISTRY }}/toanjacky/cortex-hub-web
           tags: |
             type=raw,value=latest
             type=raw,value=v${{ needs.version.outputs.version }}
@@ -253,7 +253,7 @@ jobs:
           # github.sha. Not `context: git`: it reads the ref from the checkout,
           # and a checkout of a commit is a detached HEAD it refuses
           # ("Cannot find detached HEAD ref"), which failed every build.
-          images: ${{ env.REGISTRY }}/lktiep/cortex-mcp
+          images: ${{ env.REGISTRY }}/toanjacky/cortex-mcp
           tags: |
             type=raw,value=latest
             type=raw,value=v${{ needs.version.outputs.version }}
@@ -304,7 +304,7 @@ jobs:
           # github.sha. Not `context: git`: it reads the ref from the checkout,
           # and a checkout of a commit is a detached HEAD it refuses
           # ("Cannot find detached HEAD ref"), which failed every build.
-          images: ${{ env.REGISTRY }}/lktiep/cortex-gitnexus
+          images: ${{ env.REGISTRY }}/toanjacky/cortex-gitnexus
           tags: |
             type=raw,value=latest
             type=raw,value=v${{ needs.version.outputs.version }}

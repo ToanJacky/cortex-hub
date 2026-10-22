@@ -14,6 +14,13 @@ export interface Env {
   // Auth (comma-separated API keys)
   API_KEYS: string
 
+  // Comma-separated exact browser origins allowed to call /mcp.
+  // Requests without Origin (typical terminal agents) remain supported.
+  MCP_ALLOWED_ORIGINS?: string
+
+  // Require an issue URL/ID or commit SHA on every memory/knowledge write.
+  REQUIRE_SOURCE_TRACE?: string
+
   // Secret token for internal auth (e.g. cache invalidation)
   INTERNAL_API_SECRET?: string
 

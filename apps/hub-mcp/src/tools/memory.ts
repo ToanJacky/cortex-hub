@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { Env } from '../types.js'
 import { apiCall } from '../api-call.js'
+import { hasIssueOrCommitReference, sourceRefsSchema, traceabilityBlock } from '../traceability.js'
 
 /**
  * Register memory tools.
@@ -16,7 +17,7 @@ export function registerMemoryTools(server: McpServer, env: Env) {
   // memory.store — persist a memory for an agent
   server.tool(
     'cortex_memory_store',
-    'Store a memory for an AI agent. Memories persist across sessions and can be recalled by semantic search. Use projectId + branch to scope memories to a specific branch.',
+    'Store a concise, reusable fact, resolved diagnosis, or decision—not a copied issue thread or speculation. For the Multica POC, every write must cite a GitHub issue or commit in sourceRefs. Use projectId + branch to scope branch-specific memories.',
     {
       content: z.string().describe('The memory content to store'),
       agentId: z.string().optional().describe('Agent identifier (default: "default")'),
@@ -26,8 +27,16 @@ export function registerMemoryTools(server: McpServer, env: Env) {
         .record(z.string(), z.unknown())
         .optional()
         .describe('Optional metadata tags'),
+      sourceRefs: sourceRefsSchema.optional().describe('GitHub source references for this derived memory'),
     },
-    async ({ content, agentId, projectId, branch, metadata }) => {
+    async ({ content, agentId, projectId, branch, metadata, sourceRefs }) => {
+      if (env.REQUIRE_SOURCE_TRACE === 'true' && !hasIssueOrCommitReference(sourceRefs)) {
+        return {
+          content: [{ type: 'text' as const, text: 'This Cortex deployment requires sourceRefs.issue or sourceRefs.commit for every memory write.' }],
+          isError: true,
+        }
+      }
+
       try {
         // Build scoped user_id for branch isolation
         let userId = agentId ?? 'default'
@@ -41,13 +50,14 @@ export function registerMemoryTools(server: McpServer, env: Env) {
           ...(metadata ?? {}),
           ...(projectId ? { project_id: projectId } : {}),
           ...(branch ? { branch } : {}),
+          ...(sourceRefs ? { source_refs: sourceRefs } : {}),
         }
 
         const response = await apiCall(env, '/api/mem9/store', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            messages: [{ role: 'user', content }],
+            messages: [{ role: 'user', content: `${content}${traceabilityBlock(sourceRefs)}` }],
             userId,
             agentId: agentId ?? 'default',
             metadata: meta,
