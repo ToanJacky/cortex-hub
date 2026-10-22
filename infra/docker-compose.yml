@@ -272,6 +272,10 @@ services:
       # Sessions nobody closed (/ce never ran, the Stop hook missed the hub) are
       # marked expired once they have had no tool call for this many hours. 0 = never.
       SESSION_IDLE_HOURS: ${SESSION_IDLE_HOURS:-72}
+      # Shared only between dashboard-api and hub-mcp for auth-cache invalidation.
+      # Leave unset if the dashboard does not call the invalidation endpoint.
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
+      CORTEX_CONDUCTOR_ENABLED: ${CORTEX_CONDUCTOR_ENABLED:-true}
       # Reranking (optional). With no key, every search path keeps its current
       # pure-vector behaviour; with one, /api/intel/code-search over-fetches
       # candidates and reorders them with a TypeSafe Jev relevance decision.
@@ -332,6 +336,11 @@ services:
       MCP_SERVER_NAME: "cortex-hub"
       # MCP_SERVER_VERSION comes from the image (the release it was built as).
       API_KEYS: ${MCP_API_KEYS:-}
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
+      # Exact comma-separated browser origins. Empty fails closed for requests
+      # carrying Origin while keeping terminal clients (which omit Origin) usable.
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-}
+      REQUIRE_SOURCE_TRACE: ${REQUIRE_SOURCE_TRACE:-false}
     depends_on:
       cortex-api:
         condition: service_healthy

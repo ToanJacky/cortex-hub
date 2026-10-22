@@ -29,6 +29,8 @@ import { recoverInterruptedJobs } from './services/indexer.js'
 import { scheduleBranchSweep } from './services/branch-retention.js'
 import { scheduleSessionExpiry } from './services/session-expiry.js'
 import { scheduleConductor } from './conductor/scheduler.js'
+import { isConductorEnabled } from './conductor/enabled.js'
+import { dependencyHealthIsOk, type DependencyStatus } from './lib/service-health.js'
 
 const app = new Hono()
 const logger = createLogger('dashboard-api')
@@ -58,7 +60,7 @@ app.get('/health', async (c) => {
     name: string,
     url: string,
     headers?: Record<string, string>,
-  ): Promise<'ok' | 'error'> {
+  ): Promise<DependencyStatus> {
     try {
       const res = await fetch(url, { headers, signal: AbortSignal.timeout(3000) })
       return res.ok ? 'ok' : 'error'
@@ -69,7 +71,9 @@ app.get('/health', async (c) => {
 
   const [qdrant, cliproxy, gitnexus, mem9, mcp] = await Promise.all([
     checkService('qdrant', `${process.env['QDRANT_URL'] || 'http://qdrant:6333'}/healthz`),
-    checkService('cliproxy', `${process.env['LLM_PROXY_URL'] || 'http://llm-proxy:8317'}/v1/models`),
+    process.env['LLM_PROXY_URL']
+      ? checkService('cliproxy', `${process.env['LLM_PROXY_URL']}/v1/models`)
+      : Promise.resolve('not_configured' as const),
     // eval-server enforces its bearer token on /health too, so probe it with the header.
     checkService('gitnexus', `${gitnexusUrl()}/health`, gitnexusHeaders()),
     checkService('mem9', `http://localhost:${process.env.PORT || 4000}/api/mem9/health`),
@@ -193,12 +197,9 @@ app.get('/health', async (c) => {
     ollama: ollamaStatus,
     chatModel: chatModelStatus,
   }
-  const allOk = Object.entries(services).every(([name, status]) => {
-    if (name === 'ollama' || name === 'chatModel') {
-      return status !== 'error'
-    }
-    return status === 'ok'
-  })
+  const allOk = Object.entries(services).every(([name, status]) =>
+    dependencyHealthIsOk(name, status as DependencyStatus)
+  )
 
   return c.json({
     status: allOk ? 'ok' : 'degraded',
@@ -234,7 +235,10 @@ app.route('/api/mem9', mem9ProxyRouter)
 app.route('/api/knowledge', knowledgeRouter)
 app.route('/api/webhooks', webhooksRouter)
 app.route('/api/tasks', tasksRouter)
-app.route('/api/conductor', conductorRouter)
+const conductorEnabled = isConductorEnabled()
+if (conductorEnabled) {
+  app.route('/api/conductor', conductorRouter)
+}
 app.route('/api/settings', settingsRouter)
 
 // Serve Dashboard Web static files (Next.js static export)
@@ -265,17 +269,23 @@ const port = Number(process.env.PORT) || 4000
 recoverInterruptedJobs()
 scheduleBranchSweep()
 scheduleSessionExpiry()
-scheduleConductor()
+if (conductorEnabled) {
+  scheduleConductor()
+} else {
+  logger.info('Cortex Conductor is disabled by CORTEX_CONDUCTOR_ENABLED=false')
+}
 
 const server = serve({ fetch: app.fetch, port }, () => {
   logger.info(`Dashboard API listening on http://localhost:${port}`)
 })
 
 // WebSocket for Conductor real-time agent communication
-try {
-  const { setupConductorWebSocket } = await import('./ws/conductor.js')
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  setupConductorWebSocket(server as any)
-} catch (e) {
-  console.warn('[ws] Conductor WebSocket not available:', (e as Error).message)
+if (conductorEnabled) {
+  try {
+    const { setupConductorWebSocket } = await import('./ws/conductor.js')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setupConductorWebSocket(server as any)
+  } catch (e) {
+    console.warn('[ws] Conductor WebSocket not available:', (e as Error).message)
+  }
 }
